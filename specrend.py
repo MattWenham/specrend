@@ -1,16 +1,74 @@
+"""                Colour Rendering of Spectra
+
+Python version by Matt Wenham, original C code by John Walker
+      Released under the MIT License, see LICENSE file
+
+      Initial comments from John Walker's C code below
+
+                             **
+
+                Colour Rendering of Spectra
+
+                       by John Walker
+                  http://www.fourmilab.ch/
+
+                 Last updated: March 9, 2003
+
+           This program is in the public domain.
+
+    For complete information about the techniques employed in
+    this program, see the World-Wide Web document:
+
+             http://www.fourmilab.ch/documents/specrend/
+
+    The xyz_to_rgb() function, which was wrong in the original
+    version of this program, was corrected by:
+
+            Andrew J. S. Hamilton 21 May 1999
+            Andrew.Hamilton@Colorado.EDU
+            http://casa.colorado.edu/~ajsh/
+
+    who also added the gamma correction facilities and
+    modified constrain_rgb() to work by desaturating the
+    colour by adding white.
+
+    A program which uses these functions to plot CIE
+    "tongue" diagrams called "ppmcie" is included in
+    the Netpbm graphics toolkit:
+        http://netpbm.sourceforge.net/
+    (The program was called cietoppm in earlier
+    versions of Netpbm.)
+"""
+
 from collections import namedtuple
 from typing import Tuple, Callable
 
+# RGB and xy named tuples
+
 rgb = namedtuple('rgb', 'r g b')
 colour_point = namedtuple('colour_point', 'x y')
+
+# White point chromaticities.
 
 illuminantC: colour_point = colour_point(0.3101, 0.3162)
 illuminantD65: colour_point = colour_point(0.3127, 0.3291)
 illuminantE: colour_point = colour_point(0.33333333, 0.33333333)
 
+# A colour system is defined by the CIE x and y coordinates of
+# its three primary illuminants and the x and y coordinates of
+# the white point.
+
 colour_system = namedtuple('colour_point', 'red green blue white gamma')
-GAMMA_REC709 = 0
-CC = 0.018
+GAMMA_REC709 = 0    # Rec. 709
+CC = 0.018          # Breakpoint for Rec. 709 gamma correction
+
+# CIE colour matching functions xBar, yBar, and zBar for
+# wavelengths from 380 through 780 nanometers, every 5
+# nanometers.  For a wavelength lambda in this range:
+
+# cie_colour_match[(lambda - 380) / 5][0] = xBar
+# cie_colour_match[(lambda - 380) / 5][1] = yBar
+# cie_colour_match[(lambda - 380) / 5][2] = zBar
 
 cie_colour_match = (
     (0.0014, 0.0000, 0.0065), (0.0022, 0.0001, 0.0105), (0.0042, 0.0001, 0.0201),
@@ -42,7 +100,6 @@ cie_colour_match = (
     (0.0001, 0.0000, 0.0000), (0.0001, 0.0000, 0.0000), (0.0000, 0.0000, 0.0000)
 )
 
-# noinspection PyPep8
 colour_sys_dict = {
     "NTSC": colour_system(colour_point(0.67, 0.33), colour_point(0.21, 0.71)
                           , colour_point(0.14, 0.08), illuminantC, GAMMA_REC709)
@@ -65,20 +122,38 @@ colour_sys_dict = {
 
 
 def upvp_to_xy(up: float, vp: float) -> colour_point:
-    # noinspection PyPep8
+    """Given 1976 coordinates u', v', determine 1931 chromaticities x, y"""
     return colour_point((9 * up) / ((6 * up) - (16 * vp) + 12),
                         (4 * vp) / ((6 * up) - (16 * vp) + 12)
                         )
 
 
 def xy_to_upvp(xy: colour_point) -> Tuple[float, float]:
+    """Given 1931 chromaticities x, y, determine 1976 coordinates u', v'
+    and return as tuple of floats"""
     return ((4 * xy.x) / ((-2 * xy.x) + (12 * xy.y) + 3),
             (9 * xy.y) / ((-2 * xy.x) + (12 * xy.y) + 3))
 
 
 def xy_to_rgb(cs_name: str, xy: colour_point) -> rgb:
+    """Given an additive tricolour system CS, defined by the CIE x
+    and y chromaticities of its three primaries (z is derived
+    trivially as 1-(x+y)), and a desired chromaticity (XC, YC,
+    ZC) in CIE space, determine the contribution of each
+    primary in a linear combination which sums to the desired
+    chromaticity.  If the  requested chromaticity falls outside
+    the Maxwell triangle (colour gamut) formed by the three
+    primaries, one of the r, g, or b weights will be negative.
+
+    Caller can use constrain_rgb() to desaturate an
+    outside-gamut colour to the closest representation within
+    the available gamut and/or norm_rgb to normalise the RGB
+    components so the largest nonzero component has value 1."""
+
     colour_sys = colour_sys_dict[cs_name]
+
     # Colour System z-values
+
     zr = 1 - (colour_sys.red.x + colour_sys.red.y)
     zg = 1 - (colour_sys.green.x + colour_sys.green.y)
     zb = 1 - (colour_sys.blue.x + colour_sys.blue.y)
@@ -131,12 +206,27 @@ def xy_to_rgb(cs_name: str, xy: colour_point) -> rgb:
 
 
 def inside_gamut(rgb_in: rgb) -> bool:
+    """Test whether a requested colour is within the gamut
+     achievable with the primaries of the current colour
+     system.  This amounts simply to testing whether all the
+     primary weights are non-negative."""
     return all((rgb_in.r >= 0.0, rgb_in.g >= 0.0, rgb_in.b >= 0.0))
 
 
 def constrain_rgb(rgb_in: rgb) -> Tuple[rgb, bool]:
-    # Amount of white needed is w = - min(0, *r, *g, *b) */
+    """If the requested RGB shade contains a negative weight for
+    one of the primaries, it lies outside the colour gamut
+    accessible from the given triple of primaries.  Desaturate
+    it by adding white, equal quantities of R, G, and B, enough
+    to make RGB all positive.  The function returns an RGB triple
+    in a named tuple, and a boolean indicating if the components
+    were modified."""
+
+    # Amount of white needed is w = - min(0, *r, *g, *b)
+
     w = -min(rgb_in.r, rgb_in.g, rgb_in.b, 0)
+
+    # If needed, add just enough white to make r, g, b all non-negative.
 
     if w > 0:
         return rgb(rgb_in.r + w, rgb_in.g + w, rgb_in.b + w), True
@@ -149,7 +239,7 @@ def gamma_correct_rgb(cs_name: str, rgb_in: rgb) -> rgb:
         colour_sys = colour_sys_dict[cs_name]
         gamma = colour_sys.gamma
         if gamma == GAMMA_REC709:
-            # Rec. 709 gamma correction.
+            # Rec. 709 gamma correction - see https://en.wikipedia.org/wiki/Rec._709#Transfer_characteristics
             if c < CC:
                 return ((1.099 * pow(CC, 0.45)) - 0.099) / CC
             else:
@@ -166,11 +256,21 @@ def gamma_correct_rgb(cs_name: str, rgb_in: rgb) -> rgb:
 
 
 def norm_rgb(rgb_in: rgb) -> rgb:
+    """Normalise RGB components so the most intense (unless all
+    are zero) has a value of 1."""
     greatest = max(rgb_in.r, rgb_in.g, rgb_in.b)
     return rgb(rgb_in.r / greatest, rgb_in.g / greatest, rgb_in.b / greatest)
 
 
 def spectrum_to_xy(spec_intens: Callable[[float], float]) -> colour_point:
+    """Calculate the CIE X and Y coordinates corresponding to
+    a light source with spectral distribution given by the
+    function spec_intens, which is called with a series of
+    wavelengths between 380 and 780 nm (the argument is
+    expressed in meters), which returns emittance at that
+    wavelength in arbitrary units.  The chromaticity
+    coordinates of the spectrum are returned in the xy named
+    tuple, respecting the identity x + y + z = 1."""
     λ = 380
     x = y = z = 0.0
     for i in range(81):
